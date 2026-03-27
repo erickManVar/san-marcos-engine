@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState, useMemo } from 'react'
-import { getAllQuestions, getStats, AREAS, type Question } from '@/lib/questions'
+import { getAllQuestions, getStats, getTemaStats, AREAS, TEMAS, type Question } from '@/lib/questions'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
-import { Search, BookOpen, Filter, ChevronLeft, ChevronRight, X, BarChart2, List } from 'lucide-react'
+import { Search, BookOpen, Filter, ChevronLeft, ChevronRight, X, BarChart2, List, Layers } from 'lucide-react'
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe']
 const AREA_COLORS: Record<string, string> = {
@@ -12,10 +12,17 @@ const AREA_COLORS: Record<string, string> = {
 
 const PAGE_SIZE = 20
 
+// ── Per-session topic progress ────────────────────────────────────────────────
+interface TemaProgress {
+  correct: number
+  incorrect: number
+  practiced: Set<number>
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<{ total: number; questions: Question[] } | null>(null)
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'stats' | 'questions' | 'simulacro'>('stats')
+  const [view, setView] = useState<'stats' | 'questions' | 'simulacro' | 'temas'>('stats')
 
   // Filters
   const [search, setSearch] = useState('')
@@ -31,6 +38,14 @@ export default function Dashboard() {
   const [simAnswers, setSimAnswers] = useState<Record<number, string>>({})
   const [simSubmitted, setSimSubmitted] = useState(false)
   const [simIdx, setSimIdx] = useState(0)
+
+  // Por Tema
+  const [selectedTema, setSelectedTema] = useState<string | null>(null)
+  const [temaQuestions, setTemaQuestions] = useState<Question[]>([])
+  const [temaIdx, setTemaIdx] = useState(0)
+  const [temaAnswers, setTemaAnswers] = useState<Record<number, string>>({})
+  const [temaRevealed, setTemaRevealed] = useState<Record<number, boolean>>({})
+  const [temaProgress, setTemaProgress] = useState<Record<string, TemaProgress>>({})
 
   useEffect(() => {
     getAllQuestions().then(d => { setData(d); setLoading(false) })
@@ -62,6 +77,7 @@ export default function Dashboard() {
 
   // Stats
   const stats = useMemo(() => getStats(questions), [questions])
+  const temaStats = useMemo(() => getTemaStats(questions), [questions])
 
   const yearChartData = Object.entries(stats.byYear)
     .filter(([y]) => !isNaN(Number(y)))
@@ -93,6 +109,62 @@ export default function Dashboard() {
     setSearch(''); setFilterYear(''); setFilterArea(''); setFilterFuente(''); setPage(1)
   }
 
+  // ── Por Tema logic ───────────────────────────────────────────────────────
+  function startTema(tema: string) {
+    const pool = questions
+      .filter(q => (q.tema || 'General') === tema && Object.keys(q.opciones).length >= 3)
+      .sort(() => Math.random() - 0.5)
+    setSelectedTema(tema)
+    setTemaQuestions(pool)
+    setTemaIdx(0)
+    setTemaAnswers({})
+    setTemaRevealed({})
+  }
+
+  function answerTema(qid: number, key: string, correctKey: string | null) {
+    if (temaRevealed[qid]) return
+    setTemaAnswers(prev => ({ ...prev, [qid]: key }))
+    setTemaRevealed(prev => ({ ...prev, [qid]: true }))
+    if (selectedTema) {
+      setTemaProgress(prev => {
+        const curr = prev[selectedTema] ?? { correct: 0, incorrect: 0, practiced: new Set() }
+        const isCorrect = correctKey !== null && key === correctKey
+        return {
+          ...prev,
+          [selectedTema]: {
+            correct: curr.correct + (isCorrect ? 1 : 0),
+            incorrect: curr.incorrect + (isCorrect ? 0 : 1),
+            practiced: new Set([...curr.practiced, qid]),
+          }
+        }
+      })
+    }
+  }
+
+  function temaCorrectCount() {
+    return temaProgress[selectedTema!]?.correct ?? 0
+  }
+  function temaIncorrectCount() {
+    return temaProgress[selectedTema!]?.incorrect ?? 0
+  }
+
+  function getTemaCardColor(tema: string) {
+    const prog = temaProgress[tema]
+    if (!prog || prog.practiced.size === 0) return 'border-gray-700 bg-gray-900'
+    const total = prog.correct + prog.incorrect
+    const pct = total > 0 ? (prog.correct / total) * 100 : 0
+    if (pct >= 70) return 'border-green-600 bg-green-950'
+    if (pct >= 40) return 'border-yellow-600 bg-yellow-950'
+    return 'border-red-600 bg-red-950'
+  }
+
+  function getTemaPercentage(tema: string) {
+    const prog = temaProgress[tema]
+    if (!prog || prog.practiced.size === 0) return null
+    const total = prog.correct + prog.incorrect
+    return total > 0 ? Math.round((prog.correct / total) * 100) : 0
+  }
+
   if (loading) return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <div className="text-center">
@@ -117,7 +189,12 @@ export default function Dashboard() {
             </div>
           </div>
           <nav className="flex gap-1">
-            {([['stats', BarChart2, 'Estadísticas'], ['questions', List, 'Preguntas'], ['simulacro', BookOpen, 'Simulacro']] as const).map(([v, Icon, label]) => (
+            {([
+              ['stats',     BarChart2, 'Estadísticas'],
+              ['questions', List,      'Preguntas'],
+              ['simulacro', BookOpen,  'Simulacro'],
+              ['temas',     Layers,    'Por Tema'],
+            ] as const).map(([v, Icon, label]) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
@@ -257,6 +334,7 @@ export default function Dashboard() {
                       {q.year && <span className="text-xs bg-indigo-900/50 text-indigo-300 px-2 py-0.5 rounded-full">{q.year}{q.semestre ? `-${q.semestre}` : ''}</span>}
                       {q.area && <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: `${AREA_COLORS[q.area]}22`, color: AREA_COLORS[q.area] }}>Área {q.area}</span>}
                       <span className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded-full">{q.fuente}</span>
+                      {q.tema && <span className="text-xs bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded-full">{q.tema}</span>}
                     </div>
                     <span className="text-xs text-gray-600 shrink-0">#{q.numero}</span>
                   </div>
@@ -378,6 +456,173 @@ export default function Dashboard() {
                           <button onClick={() => setSimSubmitted(true)}
                             className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm px-4 py-2 rounded-lg transition-colors">
                             Finalizar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* === POR TEMA VIEW === */}
+        {view === 'temas' && (
+          <div>
+            {/* ── A. Subject grid ── */}
+            {!selectedTema && (
+              <div>
+                <div className="mb-6">
+                  <h2 className="text-xl font-bold text-white mb-1">Práctica por Tema</h2>
+                  <p className="text-gray-400 text-sm">Selecciona una materia para practicar preguntas clasificadas automáticamente.</p>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {TEMAS.map(t => {
+                    const total = temaStats[t.id]?.total ?? 0
+                    const pct = getTemaPercentage(t.id)
+                    const prog = temaProgress[t.id]
+                    const cardClass = getTemaCardColor(t.id)
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => startTema(t.id)}
+                        disabled={total === 0}
+                        className={`relative text-left p-5 rounded-xl border transition-all hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${cardClass}`}
+                      >
+                        <div className="text-3xl mb-2">{t.emoji}</div>
+                        <p className="font-semibold text-white text-sm leading-tight mb-1">{t.id}</p>
+                        <p className="text-xs text-gray-400">{total.toLocaleString()} preguntas</p>
+                        {prog && prog.practiced.size > 0 && (
+                          <div className="mt-2">
+                            <div className="w-full bg-gray-700 rounded-full h-1.5 mb-1">
+                              <div
+                                className={`h-1.5 rounded-full transition-all ${pct! >= 70 ? 'bg-green-400' : pct! >= 40 ? 'bg-yellow-400' : 'bg-red-400'}`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <p className="text-xs text-gray-400">{pct}% · {prog.practiced.size} practicadas</p>
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── B. Practice mode ── */}
+            {selectedTema && (
+              <div className="max-w-3xl mx-auto space-y-4">
+                {/* Top bar */}
+                <div className="flex items-center justify-between">
+                  <button
+                    onClick={() => setSelectedTema(null)}
+                    className="flex items-center gap-1 text-sm text-gray-400 hover:text-white transition-colors"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Volver a temas
+                  </button>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="text-green-400 font-semibold">✓ {temaCorrectCount()}</span>
+                    <span className="text-red-400 font-semibold">✗ {temaIncorrectCount()}</span>
+                  </div>
+                </div>
+
+                {/* Progress bar */}
+                {temaQuestions.length > 0 && (
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 bg-gray-800 rounded-full h-2">
+                      <div
+                        className="bg-indigo-500 h-2 rounded-full transition-all"
+                        style={{ width: `${((temaIdx + 1) / temaQuestions.length) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-400 shrink-0">
+                      Pregunta {temaIdx + 1} de {temaQuestions.length} — {selectedTema}
+                    </span>
+                  </div>
+                )}
+
+                {temaQuestions.length === 0 ? (
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
+                    <p className="text-gray-400">No hay preguntas disponibles para este tema.</p>
+                    <button onClick={() => setSelectedTema(null)} className="mt-4 text-indigo-400 hover:text-indigo-300 text-sm">
+                      ← Volver
+                    </button>
+                  </div>
+                ) : (() => {
+                  const q = temaQuestions[temaIdx]
+                  const selected = temaAnswers[q.id]
+                  const revealed = temaRevealed[q.id]
+                  return (
+                    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                      <div className="flex gap-2 mb-4">
+                        {q.year && <span className="text-xs bg-indigo-900/50 text-indigo-300 px-2 py-0.5 rounded-full">{q.year}{q.semestre ? `-${q.semestre}` : ''}</span>}
+                        {q.area && <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: `${AREA_COLORS[q.area!]}22`, color: AREA_COLORS[q.area!] }}>Área {q.area}</span>}
+                        <span className="text-xs bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded-full">{selectedTema}</span>
+                      </div>
+                      <p className="text-gray-100 leading-relaxed mb-6">{q.enunciado}</p>
+
+                      <div className="space-y-2">
+                        {Object.entries(q.opciones).sort().map(([key, val]) => {
+                          let cls = 'border-gray-700 bg-gray-800/50 text-gray-300 hover:border-gray-600 hover:bg-gray-800'
+                          if (revealed) {
+                            if (key === q.respuesta) {
+                              cls = 'border-green-500 bg-green-900/40 text-green-200'
+                            } else if (key === selected && key !== q.respuesta) {
+                              cls = 'border-red-500 bg-red-900/30 text-red-300'
+                            } else {
+                              cls = 'border-gray-700 bg-gray-800/30 text-gray-500'
+                            }
+                          } else if (selected === key) {
+                            cls = 'border-indigo-500 bg-indigo-900/30 text-indigo-200'
+                          }
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => answerTema(q.id, key, q.respuesta)}
+                              disabled={revealed}
+                              className={`w-full text-left flex items-start gap-3 px-4 py-3 rounded-xl border text-sm transition-colors disabled:cursor-default ${cls}`}
+                            >
+                              <span className="font-bold shrink-0 text-indigo-400">{key}</span>
+                              <span>{val}</span>
+                              {revealed && key === q.respuesta && <span className="ml-auto text-green-400 text-xs font-bold">✓ Correcta</span>}
+                              {revealed && key === selected && key !== q.respuesta && <span className="ml-auto text-red-400 text-xs font-bold">✗</span>}
+                            </button>
+                          )
+                        })}
+                      </div>
+
+                      {/* Feedback + Next */}
+                      {revealed && (
+                        <div className={`mt-4 px-4 py-3 rounded-lg text-sm font-medium ${selected === q.respuesta ? 'bg-green-900/30 text-green-300 border border-green-800' : 'bg-red-900/20 text-red-300 border border-red-900'}`}>
+                          {selected === q.respuesta
+                            ? '¡Correcto! 🎉'
+                            : `Incorrecto. La respuesta correcta es ${q.respuesta ?? 'desconocida'}.`}
+                        </div>
+                      )}
+
+                      <div className="flex justify-between mt-6">
+                        <button
+                          onClick={() => setTemaIdx(i => Math.max(0, i - 1))}
+                          disabled={temaIdx === 0}
+                          className="flex items-center gap-1 text-sm text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
+                        >
+                          <ChevronLeft className="w-4 h-4" /> Anterior
+                        </button>
+                        {temaIdx < temaQuestions.length - 1 ? (
+                          <button
+                            onClick={() => setTemaIdx(i => i + 1)}
+                            className="flex items-center gap-1 text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors"
+                          >
+                            Siguiente <ChevronRight className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setSelectedTema(null)}
+                            className="bg-green-700 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg transition-colors"
+                          >
+                            Finalizar tema ✓
                           </button>
                         )}
                       </div>
