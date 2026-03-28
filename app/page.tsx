@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { getAllQuestions, getStats, getTemaStats, AREAS, TEMAS, type Question } from '@/lib/questions'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
-import { Search, BookOpen, Filter, ChevronLeft, ChevronRight, X, BarChart2, List, Layers } from 'lucide-react'
+import { Search, BookOpen, Filter, ChevronLeft, ChevronRight, X, BarChart2, List, Layers, Target } from 'lucide-react'
 
 const COLORS = ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd', '#ddd6fe']
 const AREA_COLORS: Record<string, string> = {
@@ -22,7 +22,7 @@ interface TemaProgress {
 export default function Dashboard() {
   const [data, setData] = useState<{ total: number; questions: Question[] } | null>(null)
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'stats' | 'questions' | 'simulacro' | 'temas'>('stats')
+  const [view, setView] = useState<'stats' | 'questions' | 'simulacro' | 'temas' | 'diagnostico'>('stats')
 
   // Filters
   const [search, setSearch] = useState('')
@@ -39,6 +39,14 @@ export default function Dashboard() {
   const [simSubmitted, setSimSubmitted] = useState(false)
   const [simIdx, setSimIdx] = useState(0)
 
+  // Diagnóstico state
+  const [diagPhase, setDiagPhase] = useState<'intro' | 'running' | 'results'>('intro')
+  const [diagQuestions, setDiagQuestions] = useState<Question[]>([])
+  const [diagCurrentIdx, setDiagCurrentIdx] = useState(0)
+  const [diagAnswers, setDiagAnswers] = useState<Record<number, string>>({})
+  const [diagFeedback, setDiagFeedback] = useState<string | null>(null)
+  const [diagAnswering, setDiagAnswering] = useState(false)
+
   // Por Tema
   const [selectedTema, setSelectedTema] = useState<string | null>(null)
   const [temaQuestions, setTemaQuestions] = useState<Question[]>([])
@@ -52,6 +60,86 @@ export default function Dashboard() {
   }, [])
 
   const questions = data?.questions ?? []
+
+  // ── Diagnóstico logic ─────────────────────────────────────────────────────
+  const DIAG_PER_SUBJECT = 8
+  const DIAG_SUBJECTS = [
+    'Geometría', 'Física', 'Biología', 'Geografía', 'Química', 'Aritmética',
+    'Razonamiento Verbal', 'Economía', 'Lenguaje', 'Álgebra', 'Trigonometría',
+    'Historia del Perú', 'Filosofía', 'Psicología', 'Razonamiento Matemático'
+  ]
+
+  const diagEligibleSubjects = useMemo(() => {
+    return DIAG_SUBJECTS.filter(tema => {
+      const pool = questions.filter(q => (q.tema || 'General') === tema && Object.keys(q.opciones).length >= 3 && q.respuesta)
+      return pool.length >= DIAG_PER_SUBJECT
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questions])
+
+  function startDiagnostico() {
+    const allQs: Question[] = []
+    for (const tema of diagEligibleSubjects) {
+      const pool = questions
+        .filter(q => (q.tema || 'General') === tema && Object.keys(q.opciones).length >= 3 && q.respuesta)
+        .sort(() => Math.random() - 0.5)
+        .slice(0, DIAG_PER_SUBJECT)
+      allQs.push(...pool)
+    }
+    setDiagQuestions(allQs)
+    setDiagCurrentIdx(0)
+    setDiagAnswers({})
+    setDiagFeedback(null)
+    setDiagAnswering(false)
+    setDiagPhase('running')
+  }
+
+  function answerDiag(key: string) {
+    if (diagAnswering) return
+    const q = diagQuestions[diagCurrentIdx]
+    setDiagFeedback(key)
+    setDiagAnswering(true)
+    setDiagAnswers(prev => ({ ...prev, [q.id]: key }))
+    setTimeout(() => {
+      if (diagCurrentIdx + 1 >= diagQuestions.length) {
+        setDiagPhase('results')
+      } else {
+        setDiagCurrentIdx(i => i + 1)
+        setDiagFeedback(null)
+        setDiagAnswering(false)
+      }
+    }, 1200)
+  }
+
+  const diagResults = useMemo(() => {
+    const results: Record<string, { correct: number; total: number }> = {}
+    for (const q of diagQuestions) {
+      const tema = q.tema || 'General'
+      if (!results[tema]) results[tema] = { correct: 0, total: 0 }
+      results[tema].total++
+      if (diagAnswers[q.id] && diagAnswers[q.id] === q.respuesta) {
+        results[tema].correct++
+      }
+    }
+    return results
+  }, [diagQuestions, diagAnswers])
+
+  function diagStatus(correct: number, total: number): { emoji: string; label: string; color: string } {
+    const pct = total > 0 ? correct / total : 0
+    if (correct === total && total > 0) return { emoji: '⭐', label: 'Dominado', color: 'text-yellow-300' }
+    if (pct >= 0.75) return { emoji: '🟢', label: 'Bien', color: 'text-green-400' }
+    if (pct >= 0.5) return { emoji: '🟡', label: 'Reforzar', color: 'text-yellow-400' }
+    return { emoji: '🔴', label: 'Repasar desde cero', color: 'text-red-400' }
+  }
+
+  function resetDiag() {
+    setDiagPhase('intro')
+    setDiagQuestions([])
+    setDiagCurrentIdx(0)
+    setDiagAnswers({})
+    setDiagFeedback(null)
+    setDiagAnswering(false)
+  }
 
   // Unique filter values
   const years = useMemo(() => [...new Set(questions.map(q => q.year).filter(Boolean))].sort((a, b) => (b ?? 0) - (a ?? 0)), [questions])
@@ -190,10 +278,11 @@ export default function Dashboard() {
           </div>
           <nav className="flex gap-1">
             {([
-              ['stats',     BarChart2, 'Estadísticas'],
-              ['questions', List,      'Preguntas'],
-              ['simulacro', BookOpen,  'Simulacro'],
-              ['temas',     Layers,    'Por Tema'],
+              ['stats',       BarChart2, 'Estadísticas'],
+              ['questions',   List,      'Preguntas'],
+              ['simulacro',   BookOpen,  'Simulacro'],
+              ['temas',       Layers,    'Por Tema'],
+              ['diagnostico', Target,    'Diagnóstico'],
             ] as const).map(([v, Icon, label]) => (
               <button
                 key={v}
@@ -631,6 +720,252 @@ export default function Dashboard() {
                 })()}
               </div>
             )}
+          </div>
+        )}
+
+        {/* === DIAGNÓSTICO VIEW === */}
+        {view === 'diagnostico' && (
+          <div className="max-w-3xl mx-auto">
+
+            {/* ── INTRO PHASE ── */}
+            {diagPhase === 'intro' && (
+              <div className="space-y-6">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-8">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center">
+                      <Target className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold text-white">Diagnóstico de nivel</h2>
+                      <p className="text-gray-400 text-sm">Vamos a evaluar tu nivel en cada materia. 8 preguntas por materia, una a la vez.</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-950/50 border border-indigo-800/50 rounded-xl p-4 mb-6">
+                    <p className="text-indigo-300 text-sm font-medium mb-1">
+                      {diagEligibleSubjects.length} materias disponibles · {diagEligibleSubjects.length * DIAG_PER_SUBJECT} preguntas en total
+                    </p>
+                    <p className="text-gray-400 text-xs">Tiempo estimado: ~{diagEligibleSubjects.length * 4} minutos</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-8">
+                    {DIAG_SUBJECTS.map(tema => {
+                      const eligible = diagEligibleSubjects.includes(tema)
+                      const temaObj = TEMAS.find(t => t.id === tema)
+                      return (
+                        <div
+                          key={tema}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
+                            eligible
+                              ? 'border-gray-700 bg-gray-800 text-gray-200'
+                              : 'border-gray-800 bg-gray-900/50 text-gray-600 line-through'
+                          }`}
+                        >
+                          <span>{temaObj?.emoji ?? '📚'}</span>
+                          <span className="truncate">{tema}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  <button
+                    onClick={startDiagnostico}
+                    disabled={diagEligibleSubjects.length === 0}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-colors text-lg"
+                  >
+                    Iniciar diagnóstico
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── RUNNING PHASE ── */}
+            {diagPhase === 'running' && diagQuestions.length > 0 && (() => {
+              const q = diagQuestions[diagCurrentIdx]
+              const currentTema = q.tema || 'General'
+              const temaStartIdx = diagQuestions.findIndex(dq => (dq.tema || 'General') === currentTema)
+              const temaQuestionNum = diagCurrentIdx - temaStartIdx + 1
+              const temaObj = TEMAS.find(t => t.id === currentTema)
+              const totalQs = diagQuestions.length
+              const progressPct = ((diagCurrentIdx) / totalQs) * 100
+
+              return (
+                <div className="space-y-4">
+                  {/* Overall progress */}
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 bg-gray-800 rounded-full h-2">
+                      <div
+                        className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${progressPct}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-400 shrink-0">
+                      Pregunta {diagCurrentIdx + 1} de {totalQs}
+                    </span>
+                  </div>
+
+                  {/* Subject badge */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{temaObj?.emoji ?? '📚'}</span>
+                    <span className="bg-indigo-900/50 text-indigo-300 text-sm font-medium px-3 py-1 rounded-full border border-indigo-800/50">
+                      {currentTema} — {temaQuestionNum} de {DIAG_PER_SUBJECT}
+                    </span>
+                  </div>
+
+                  {/* Question card */}
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <p className="text-gray-100 leading-relaxed mb-6 text-base">{q.enunciado}</p>
+
+                    <div className="space-y-2">
+                      {Object.entries(q.opciones).sort().map(([key, val]) => {
+                        const isAnswered = diagFeedback !== null
+                        const isSelected = diagFeedback === key
+                        const isCorrect = key === q.respuesta
+
+                        let cls = 'border-gray-700 bg-gray-800/50 text-gray-300 hover:border-gray-600 hover:bg-gray-800'
+                        if (isAnswered) {
+                          if (isCorrect) {
+                            cls = 'border-green-500 bg-green-900/40 text-green-200'
+                          } else if (isSelected && !isCorrect) {
+                            cls = 'border-red-500 bg-red-900/30 text-red-300'
+                          } else {
+                            cls = 'border-gray-700 bg-gray-800/30 text-gray-500'
+                          }
+                        }
+
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => answerDiag(key)}
+                            disabled={diagAnswering}
+                            className={`w-full text-left flex items-start gap-3 px-4 py-3 rounded-xl border text-sm transition-colors disabled:cursor-default ${cls}`}
+                          >
+                            <span className="font-bold shrink-0 text-indigo-400">{key}</span>
+                            <span className="flex-1">{val}</span>
+                            {isAnswered && isCorrect && <span className="text-green-400 text-xs font-bold shrink-0">✓</span>}
+                            {isAnswered && isSelected && !isCorrect && <span className="text-red-400 text-xs font-bold shrink-0">✗</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )
+            })()}
+
+            {/* ── RESULTS PHASE ── */}
+            {diagPhase === 'results' && (() => {
+              const sortedSubjects = Object.entries(diagResults)
+                .sort(([, a], [, b]) => (a.correct / a.total) - (b.correct / b.total))
+              const totalCorrect = Object.values(diagResults).reduce((s, r) => s + r.correct, 0)
+              const totalQs = Object.values(diagResults).reduce((s, r) => s + r.total, 0)
+              const overallPct = totalQs > 0 ? Math.round((totalCorrect / totalQs) * 100) : 0
+              const weakest = sortedSubjects.slice(0, 3).map(([tema]) => tema)
+              const weakestSubject = weakest[0]
+              const today = new Date().toLocaleDateString('es-PE', { day: 'numeric', month: 'long', year: 'numeric' })
+
+              return (
+                <div className="space-y-6">
+                  {/* Header */}
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+                    <p className="text-gray-400 text-sm mb-1">Tu diagnóstico — {today}</p>
+                    <div className="flex items-end gap-3 mb-2">
+                      <span className="text-5xl font-black text-indigo-400">{totalCorrect}</span>
+                      <span className="text-2xl text-gray-500 mb-1">/{totalQs} correctas</span>
+                      <span className="text-2xl font-bold text-white mb-1">({overallPct}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-800 rounded-full h-3 mt-3">
+                      <div
+                        className="h-3 rounded-full transition-all"
+                        style={{
+                          width: `${overallPct}%`,
+                          background: overallPct >= 75 ? '#22c55e' : overallPct >= 50 ? '#eab308' : '#ef4444'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Per-subject table */}
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                    <div className="px-6 py-4 border-b border-gray-800">
+                      <h3 className="font-semibold text-white">Resultados por materia</h3>
+                      <p className="text-xs text-gray-400 mt-0.5">Ordenado de mayor a menor dificultad</p>
+                    </div>
+                    <div className="divide-y divide-gray-800">
+                      {sortedSubjects.map(([tema, result]) => {
+                        const pct = Math.round((result.correct / result.total) * 100)
+                        const status = diagStatus(result.correct, result.total)
+                        const temaObj = TEMAS.find(t => t.id === tema)
+                        return (
+                          <div key={tema} className="px-6 py-3 flex items-center gap-3">
+                            <span className="text-lg shrink-0">{temaObj?.emoji ?? '📚'}</span>
+                            <span className="flex-1 text-sm text-gray-200 font-medium">{tema}</span>
+                            <div className="text-right shrink-0">
+                              <div className="flex items-center gap-3">
+                                <div className="w-20 bg-gray-800 rounded-full h-1.5 hidden sm:block">
+                                  <div
+                                    className="h-1.5 rounded-full"
+                                    style={{
+                                      width: `${pct}%`,
+                                      background: pct >= 75 ? '#22c55e' : pct >= 50 ? '#eab308' : '#ef4444'
+                                    }}
+                                  />
+                                </div>
+                                <span className="text-xs text-gray-400 w-10 text-right">{result.correct}/{result.total}</span>
+                                <span className="text-xs font-bold w-10 text-right text-gray-300">{pct}%</span>
+                                <span className={`text-xs font-medium ${status.color} w-32 text-right hidden sm:block`}>
+                                  {status.emoji} {status.label}
+                                </span>
+                                <span className="sm:hidden text-sm">{status.emoji}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Priority recommendation */}
+                  {weakest.length > 0 && (
+                    <div className="bg-amber-950/50 border border-amber-700/50 rounded-xl p-5">
+                      <p className="text-amber-300 font-semibold mb-1">🎯 Tu prioridad de estudio</p>
+                      <p className="text-white font-bold text-lg mb-2">{weakest.join(' · ')}</p>
+                      <p className="text-amber-200/70 text-sm">
+                        Enfócate en estas materias primero — son las que más puntos te pueden dar en el examen.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    {weakestSubject && (
+                      <button
+                        onClick={() => {
+                          startTema(weakestSubject)
+                          setView('temas')
+                        }}
+                        className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-sm"
+                      >
+                        Practicar {weakestSubject}
+                      </button>
+                    )}
+                    <button
+                      onClick={resetDiag}
+                      className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-sm"
+                    >
+                      Reiniciar diagnóstico
+                    </button>
+                    <button
+                      onClick={() => setView('stats')}
+                      className="flex-1 bg-gray-800 hover:bg-gray-700 text-gray-300 font-semibold py-3 px-4 rounded-xl transition-colors text-sm"
+                    >
+                      Ver estadísticas
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
+
           </div>
         )}
 
